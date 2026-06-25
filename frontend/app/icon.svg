@@ -1,0 +1,17 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FCA98A"/>
+      <stop offset="1" stop-color="#E76F4E"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="8" fill="url(#bg)"/>
+  <!-- bottle glass (white) -->
+  <rect x="11" y="9.5" width="10" height="18" rx="4.5" fill="#ffffff"/>
+  <!-- collar -->
+  <rect x="11.6" y="6.6" width="8.8" height="2.7" rx="1.2" fill="#ffffff"/>
+  <!-- nipple -->
+  <path d="M14 4.3c0-0.9 0.9-1.6 2-1.6s2 0.7 2 1.6v2.1h-4z" fill="#ffffff"/>
+  <!-- milk fill (two-tone makes it read as a bottle at tiny sizes) -->
+  <path d="M12 18.5h8v5a3.4 3.4 0 0 1-3.4 3.4h-1.2A3.4 3.4 0 0 1 12 23.5z" fill="#E45B36"/>
+</svg>
