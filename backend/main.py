@@ -77,6 +77,21 @@ async def health() -> HealthStatus:
     return HealthStatus(version=__version__)
 
 
+@app.get("/health/db", tags=["health"])
+async def health_db() -> dict[str, str]:
+    """Diagnostic: report whether Supabase is configured and reachable."""
+    from app.core.database import get_supabase
+
+    client = get_supabase()
+    if client is None:
+        return {"supabase": "not configured (in-memory mode)"}
+    try:
+        client.table("infants").select("id").limit(1).execute()
+        return {"supabase": "connected"}
+    except Exception as exc:  # noqa: BLE001 - surface the real error for diagnosis
+        return {"supabase": "error", "detail": f"{type(exc).__name__}: {exc}"[:400]}
+
+
 if __name__ == "__main__":
     import uvicorn
 
