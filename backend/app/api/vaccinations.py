@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
 from app.api.infants import find_infant
+from app.core.database import get_supabase
 
 router = APIRouter(prefix="/api/vaccinations", tags=["vaccinations"])
 
@@ -56,7 +57,18 @@ class VaccinationLog(VaccinationLogCreate):
     id: str
 
 
+# In-memory fallback used only when Supabase is not configured.
 _LOGS: list[VaccinationLog] = []
+_LOGS_TABLE = "vaccination_logs"
+
+
+def _row_to_log(row: dict) -> VaccinationLog:
+    return VaccinationLog(
+        id=str(row["id"]),
+        infant_id=str(row["infant_id"]),
+        code=row["code"],
+        administered_on=row["administered_on"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +148,22 @@ async def get_schedule() -> list[ScheduledVaccine]:
 @router.post("/logs", response_model=VaccinationLog, status_code=status.HTTP_201_CREATED)
 async def log_vaccination(payload: VaccinationLogCreate) -> VaccinationLog:
     """Record an administered vaccination."""
+    sb = get_supabase()
+    if sb is not None:
+        row = (
+            sb.table(_LOGS_TABLE)
+            .insert(
+                {
+                    "infant_id": payload.infant_id,
+                    "code": payload.code,
+                    "administered_on": payload.administered_on.isoformat(),
+                }
+            )
+            .execute()
+            .data[0]
+        )
+        return _row_to_log(row)
+
     log = VaccinationLog(id=str(uuid4()), **payload.model_dump())
     _LOGS.append(log)
     return log
@@ -144,6 +172,13 @@ async def log_vaccination(payload: VaccinationLogCreate) -> VaccinationLog:
 @router.get("/logs", response_model=list[VaccinationLog])
 async def list_logs(infant_id: str | None = None) -> list[VaccinationLog]:
     """List vaccination logs, optionally filtered by infant."""
+    sb = get_supabase()
+    if sb is not None:
+        query = sb.table(_LOGS_TABLE).select("*")
+        if infant_id is not None:
+            query = query.eq("infant_id", infant_id)
+        return [_row_to_log(r) for r in (query.execute().data or [])]
+
     if infant_id is None:
         return _LOGS
     return [log for log in _LOGS if log.infant_id == infant_id]
@@ -164,10 +199,20 @@ async def infant_vaccine_schedule(infant_id: str) -> InfantVaccineSchedule:
     today = date.today()
 
     # Sync with administered logs: any dose already recorded for this infant is
-    # marked COMPLETED, overriding the date-derived status. Match on vaccine code
-    # (and name, defensively) so manual log entries still line up.
-    logged = [log for log in _LOGS if log.infant_id == infant_id]
-    administered: set[str] = {log.code for log in logged}
+    # marked COMPLETED, overriding the date-derived status.
+    sb = get_supabase()
+    if sb is not None:
+        rows = (
+            sb.table(_LOGS_TABLE)
+            .select("code")
+            .eq("infant_id", infant_id)
+            .execute()
+            .data
+            or []
+        )
+        administered: set[str] = {r["code"] for r in rows}
+    else:
+        administered = {log.code for log in _LOGS if log.infant_id == infant_id}
 
     items = [
         VaccineDueItem(

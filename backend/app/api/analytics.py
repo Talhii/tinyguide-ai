@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.infants import find_infant
+from app.core.database import get_supabase
 from app.core.security import Gender
 from app.services.percentile import calculate_percentile, reference_band
 
@@ -113,9 +114,9 @@ class GrowthLogEntry(GrowthLogCreate):
     recorded_at: date
 
 
-# Global runtime store: infant_id -> chronological list of measurements.
-# Replace with Supabase persistence once configured.
+# In-memory fallback used only when Supabase is not configured.
 _GROWTH_LOGS: dict[str, list[GrowthLogEntry]] = {}
+_GROWTH_TABLE = "growth_logs"
 
 
 @router.post(
@@ -130,12 +131,36 @@ async def log_growth(payload: GrowthLogCreate) -> GrowthLogEntry:
             status_code=status.HTTP_404_NOT_FOUND, detail="Infant not found"
         )
 
+    recorded_at = payload.recorded_at or date.today()
+    sb = get_supabase()
+    if sb is not None:
+        row = (
+            sb.table(_GROWTH_TABLE)
+            .insert(
+                {
+                    "infant_id": payload.infant_id,
+                    "weight_kg": payload.weight_kg,
+                    "height_cm": payload.height_cm,
+                    "recorded_at": recorded_at.isoformat(),
+                }
+            )
+            .execute()
+            .data[0]
+        )
+        return GrowthLogEntry(
+            id=str(row["id"]),
+            infant_id=str(row["infant_id"]),
+            weight_kg=float(row["weight_kg"]),
+            height_cm=float(row["height_cm"]),
+            recorded_at=row["recorded_at"],
+        )
+
     entry = GrowthLogEntry(
         id=str(uuid4()),
         infant_id=payload.infant_id,
         weight_kg=payload.weight_kg,
         height_cm=payload.height_cm,
-        recorded_at=payload.recorded_at or date.today(),
+        recorded_at=recorded_at,
     )
     _GROWTH_LOGS.setdefault(payload.infant_id, []).append(entry)
     return entry
@@ -184,13 +209,32 @@ async def growth_timeline(payload: GrowthTimelineInput) -> GrowthTimeline:
             status_code=status.HTTP_404_NOT_FOUND, detail="Infant not found"
         )
 
-    entries = sorted(
-        _GROWTH_LOGS.get(payload.infant_id, []), key=lambda e: e.recorded_at
-    )
+    # Gather (recorded_at, weight) pairs from Supabase or the in-memory store.
+    sb = get_supabase()
+    if sb is not None:
+        rows = (
+            sb.table(_GROWTH_TABLE)
+            .select("recorded_at, weight_kg")
+            .eq("infant_id", payload.infant_id)
+            .order("recorded_at")
+            .execute()
+            .data
+            or []
+        )
+        measurements = [
+            (date.fromisoformat(r["recorded_at"]), float(r["weight_kg"])) for r in rows
+        ]
+    else:
+        measurements = [
+            (e.recorded_at, e.weight_kg)
+            for e in sorted(
+                _GROWTH_LOGS.get(payload.infant_id, []), key=lambda e: e.recorded_at
+            )
+        ]
 
     points: list[GrowthPlotPoint] = []
-    for entry in entries:
-        age_days = max((entry.recorded_at - infant.birth_date).days, 0)
+    for recorded_at, weight in measurements:
+        age_days = max((recorded_at - infant.birth_date).days, 0)
         age_months = round(age_days / _DAYS_PER_MONTH, 1)
         band = reference_band(
             gender=infant.gender, metric="weight", age_months=age_months
@@ -198,7 +242,7 @@ async def growth_timeline(payload: GrowthTimelineInput) -> GrowthTimeline:
         points.append(
             GrowthPlotPoint(
                 age_months=age_months,
-                child_weight=entry.weight_kg,
+                child_weight=weight,
                 p5_weight=band[5],
                 p50_weight=band[50],
                 p95_weight=band[95],
